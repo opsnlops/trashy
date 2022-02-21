@@ -7,6 +7,7 @@
 #include <ArduinoJson.h>
 #include <WiFi.h>
 #include <ESPmDNS.h>
+#include <Adafruit_LC709203F.h>
 
 #include "esp_system.h"
 #include "esp_event.h"
@@ -37,14 +38,9 @@ using namespace creatures;
 
 static const char *TAG = "Main";
 
-// Queue for files to play on our servos
-#define MOVEMENT_QUEUE_LENGTH 2
-QueueHandle_t movementQueue;
-
-TaskHandle_t movementTaskHandle;
-
 void onMqttMessage(char *topic, char *payload, AsyncMqttClientMessageProperties properties, size_t len, size_t index, size_t total);
 
+Adafruit_LC709203F battery;
 
 void setup()
 {
@@ -58,6 +54,12 @@ void setup()
 
     delay(2000);
     ESP_LOGI(TAG, "Helllllo! I'm up and running on on %s!", ARDUINO_VARIANT);
+
+    if (!battery.begin())
+    {
+        ESP_LOGE(TAG, "Unable to find the battery monitor!");
+    }
+    battery.setPackSize(LC709203F_APA_2000MAH);
 
     // MagicBroker::mqttReconnectTimer = xTimerCreate("mqttTimer", pdMS_TO_TICKS(2000), pdFALSE, (void *)0, reinterpret_cast<TimerCallbackFunction_t>(MagicBroker::connectToMqtt));
 
@@ -92,13 +94,17 @@ void setup()
     mqtt.publish(String("status"), String("I'm alive!!"), 0, false);
 
     mqtt.startHeartbeat();
-
 }
 
 void loop()
 {
     // Nothing! It's all handled from tasks
-    vTaskDelete(NULL);
+    // vTaskDelete(NULL);
+
+    ESP_LOGI(TAG, "Battery voltage: %f", battery.cellVoltage());
+    ESP_LOGI(TAG, "Battery percent: %f", battery.cellPercent());
+
+    vTaskDelay(pdMS_TO_TICKS(10000));
 }
 
 void onMqttMessage(char *topic, char *payload, AsyncMqttClientMessageProperties properties, size_t len, size_t index, size_t total)
