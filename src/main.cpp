@@ -34,6 +34,8 @@ extern "C"
 #include "mdns/creature-mdns.h"
 #include "mdns/magicbroker.h"
 
+#include "DFRobot_DF1201S.h"
+
 #define uS_TO_S_FACTOR 1000000
 
 using namespace creatures;
@@ -52,7 +54,6 @@ Adafruit_LC709203F battery;
 NetworkConnection network = NetworkConnection();
 Time creatureTime = Time();
 
-
 void publishStateToMQTT(String status);
 void doInitialBoot();
 void goToSleep();
@@ -60,7 +61,7 @@ void setUpMQTT();
 void touchCallback();
 void doTouchEvent();
 void publishBatteryState();
-
+void playSound();
 
 void setup()
 {
@@ -96,6 +97,39 @@ void setup()
     }
 }
 
+void playSound()
+{
+    Serial1.begin(115200, SERIAL_8N1, 16, 17);
+    while (!Serial1)
+        ;
+
+    ESP_LOGI(TAG, "Serial1 open");
+
+    DFRobot_DF1201S DF1201S;
+    while (!DF1201S.begin(Serial1))
+    {
+        ESP_LOGE(TAG, "Init failed, please check the wire connection!");
+        delay(1000);
+    }
+    DF1201S.setLED(true);
+    DF1201S.setPrompt(false);
+    DF1201S.enableAMP();
+
+    DF1201S.setVol(20);
+    ESP_LOGD(TAG, "VOL: %d", DF1201S.getVol());
+
+    DFRobot_DF1201S::ePlayMode_t mode;
+    mode = DFRobot_DF1201S::SINGLE;
+    DF1201S.setPlayMode(mode);
+
+    DF1201S.playFileNum(0);
+ 
+    vTaskDelay(pdMS_TO_TICKS(1500));
+    DF1201S.disableAMP();
+    DF1201S.setLED(false);
+    DF1201S.setPrompt(false);
+}
+
 void doInitialBoot()
 {
 
@@ -114,7 +148,7 @@ void doInitialBoot()
 void publishStateToMQTT(String status)
 {
     // Connect to the Wifi if we haven't already
-    if(!network.isConnected())
+    if (!network.isConnected())
     {
         network.connectToWiFi();
     }
@@ -176,6 +210,7 @@ void doTouchEvent()
     {
     case 0:
         ESP_LOGI(TAG, "Touch detected on GPIO 4");
+        playSound();
         break;
     case 1:
         ESP_LOGI(TAG, "Touch detected on GPIO 0");
