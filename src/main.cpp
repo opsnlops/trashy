@@ -40,21 +40,33 @@ using namespace creatures;
 
 static const char *TAG = "Main";
 
-void onMqttMessage(char *topic, char *payload, AsyncMqttClientMessageProperties properties, size_t len, size_t index, size_t total);
+// The higher this number the more sensitive
+#define TOUCH_WAKEUP_THRESHOLD 50
+
+// Keep track of how many times we've woken up and why
+RTC_DATA_ATTR int wakeupCount = 0;
+String wakeupReason = "";
 
 MQTT mqtt = MQTT(String(CREATURE_NAME));
 Adafruit_LC709203F battery;
 NetworkConnection network = NetworkConnection();
 Time creatureTime = Time();
 
-void doWakeup();
+
+void publishStateToMQTT(String status);
 void doInitialBoot();
 void goToSleep();
-void publishBatteryState();
 void setUpMQTT();
+void touchCallback();
+void doTouchEvent();
+void publishBatteryState();
+
 
 void setup()
 {
+    // Mark that we woke up again
+    wakeupCount++;
+
     pinMode(LED_BUILTIN, OUTPUT);
     digitalWrite(LED_BUILTIN, HIGH);
 
@@ -67,15 +79,19 @@ void setup()
     delay(2000);
 #endif
 
-    esp_sleep_wakeup_cause_t wakeupReason;
-    wakeupReason = esp_sleep_get_wakeup_cause();
-
-    switch (wakeupReason)
+    switch (esp_sleep_get_wakeup_cause())
     {
     case ESP_SLEEP_WAKEUP_TIMER:
-        doWakeup();
+        wakeupReason = "timer";
+        publishStateToMQTT("Wakeup due to timer");
+        break;
+    case ESP_SLEEP_WAKEUP_TOUCHPAD:
+        wakeupReason = "touched";
+        doTouchEvent();
+        publishStateToMQTT("Wakeup due to being touched");
         break;
     default:
+        wakeupReason = "initial";
         doInitialBoot();
     }
 }
@@ -84,29 +100,46 @@ void doInitialBoot()
 {
 
     ESP_LOGI(TAG, "Helllllo! I'm up and running on on %s!", ARDUINO_VARIANT);
-    // MagicBroker::mqttReconnectTimer = xTimerCreate("mqttTimer", pdMS_TO_TICKS(2000), pdFALSE, (void *)0, reinterpret_cast<TimerCallbackFunction_t>(MagicBroker::connectToMqtt));
 
     network.connectToWiFi();
 
     creatureTime.init();
     creatureTime.obtainTime();
 
-    setUpMQTT();
-    mqtt.publish(String("status"), String("I'm alive!!"), 0, false);
-
-    publishBatteryState();
+    publishStateToMQTT("Initial Boot Completed");
 
     goToSleep();
 }
 
-void doWakeup()
+void publishStateToMQTT(String status)
 {
+    // Connect to the Wifi if we haven't already
+    if(!network.isConnected())
+    {
+        network.connectToWiFi();
+    }
 
-    network.connectToWiFi();
-
+    // Get MQTT running
     setUpMQTT();
+
+    // Publish our status to MQTT
+    StaticJsonDocument<256> message;
+    message["wakeCount"] = wakeupCount;
+    message["reason"] = wakeupReason;
+    message["status"] = status;
+    message["updatedAt"] = Time::getCurrentTime();
+
+    String json;
+    serializeJson(message, json);
+    mqtt.publish(String("status"), json, 1, false);
+
+    // ...and the battery state
     publishBatteryState();
 
+    // Nicely hang up on the WiFi network
+    network.disconnectFromWiFi();
+
+    // Zzzzzz
     goToSleep();
 }
 
@@ -135,6 +168,53 @@ void publishBatteryState()
     }
 }
 
+void doTouchEvent()
+{
+    touch_pad_t touchPin = esp_sleep_get_touchpad_wakeup_status();
+
+    switch (touchPin)
+    {
+    case 0:
+        ESP_LOGI(TAG, "Touch detected on GPIO 4");
+        break;
+    case 1:
+        ESP_LOGI(TAG, "Touch detected on GPIO 0");
+        break;
+    case 2:
+        ESP_LOGI(TAG, "Touch detected on GPIO 2");
+        break;
+    case 3:
+        ESP_LOGI(TAG, "Touch detected on GPIO 15");
+        break;
+    case 4:
+        ESP_LOGI(TAG, "Touch detected on GPIO 13");
+        break;
+    case 5:
+        ESP_LOGI(TAG, "Touch detected on GPIO 12");
+        break;
+    case 6:
+        ESP_LOGI(TAG, "Touch detected on GPIO 14");
+        break;
+    case 7:
+        ESP_LOGI(TAG, "Touch detected on GPIO 27");
+        break;
+    case 8:
+        ESP_LOGI(TAG, "Touch detected on GPIO 33");
+        break;
+    case 9:
+        ESP_LOGI(TAG, "Touch detected on GPIO 32");
+        break;
+    default:
+        ESP_LOGI(TAG, "Wakeup not by touchpad");
+        break;
+    }
+}
+
+void touchCallback()
+{
+    // placeholder callback function
+}
+
 void setUpMQTT()
 {
     // Connect to MQTT
@@ -144,9 +224,16 @@ void setUpMQTT()
 void goToSleep()
 {
 
-    int sleepTime = 30;
+    int sleepTime = 1800;
     esp_sleep_enable_timer_wakeup(sleepTime * uS_TO_S_FACTOR);
     ESP_LOGI(TAG, "Sleeping for %d seconds", sleepTime);
+
+    // Wake up on two touch points
+    touchAttachInterrupt(OTA_GPIO, touchCallback, TOUCH_WAKEUP_THRESHOLD);    // Do the thing (blue wire)
+    touchAttachInterrupt(ACTION_GPIO, touchCallback, TOUCH_WAKEUP_THRESHOLD); // Do OTA (yellow wire)
+
+    // Configure Touchpad as wakeup source
+    esp_sleep_enable_touchpad_wakeup();
 
     /*
     Next we decide what all peripherals to shut down/keep on
@@ -155,16 +242,6 @@ void goToSleep()
     The line below turns off all RTC peripherals in deep sleep.
     */
     // esp_deep_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_OFF);
-    // Serial.println("Configured all RTC Peripherals to be powered down in sleep");
-
-    /*
-    Now that we have setup a wake cause and if needed setup the
-    peripherals state in deep sleep, we can now start going to
-    deep sleep.
-    In the case that no wake up sources were provided but deep
-    sleep was started, it will sleep forever unless hardware
-    reset occurs.
-    */
 
     esp_deep_sleep_start();
 }
