@@ -150,7 +150,7 @@ void playSound()
     player.setPlayMode(player.SINGLE);
     player.playFileNum(0);
 
-    vTaskDelay(pdMS_TO_TICKS(1500));
+    vTaskDelay(pdMS_TO_TICKS(10000));
     //player.pause();
 
     ESP_LOGD(TAG, "Disabling the amp");
