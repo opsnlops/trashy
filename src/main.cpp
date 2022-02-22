@@ -49,10 +49,15 @@ static const char *TAG = "Main";
 RTC_DATA_ATTR int wakeupCount = 0;
 String wakeupReason = "";
 
+// Store the current volume in the RTC so we don't have to go to MQTT
+// for our config early
+RTC_DATA_ATTR uint8_t playerVolume = 20;
+
 MQTT mqtt = MQTT(String(CREATURE_NAME));
 Adafruit_LC709203F battery;
 NetworkConnection network = NetworkConnection();
 Time creatureTime = Time();
+DFRobot_DF1201S player;
 
 void publishStateToMQTT(String status);
 void doInitialBoot();
@@ -62,6 +67,7 @@ void touchCallback();
 void doTouchEvent();
 void publishBatteryState();
 void playSound();
+void setupSound();
 
 void setup()
 {
@@ -80,6 +86,8 @@ void setup()
     delay(2000);
 #endif
 
+    setupSound();
+
     switch (esp_sleep_get_wakeup_cause())
     {
     case ESP_SLEEP_WAKEUP_TIMER:
@@ -97,37 +105,57 @@ void setup()
     }
 }
 
-void playSound()
+void setupSound()
 {
     Serial1.begin(115200, SERIAL_8N1, 16, 17);
     while (!Serial1)
         ;
+    ESP_LOGI(TAG, "Serial1 opened for the MP3 player");
 
-    ESP_LOGI(TAG, "Serial1 open");
-
-    DFRobot_DF1201S DF1201S;
-    while (!DF1201S.begin(Serial1))
+    while (!player.begin(Serial1))
     {
         ESP_LOGE(TAG, "Init failed, please check the wire connection!");
         delay(1000);
     }
-    DF1201S.setLED(true);
-    DF1201S.setPrompt(false);
-    DF1201S.enableAMP();
 
-    DF1201S.setVol(20);
-    ESP_LOGD(TAG, "VOL: %d", DF1201S.getVol());
+    // The player defaults to non-MUSIC, which makes all other API calls silently fail. I've
+    // added some debugging to the player myself to make this more obvious.
+    player.switchFunction(player.MUSIC);
+    player.setPrompt(false);
+    player.setPlayMode(player.SINGLE);
+    ESP_LOGD(TAG, "Play mode is currently %d (should be 3)", player.getPlayMode());
 
-    DFRobot_DF1201S::ePlayMode_t mode;
-    mode = DFRobot_DF1201S::SINGLE;
-    DF1201S.setPlayMode(mode);
+    // Get the volume from the RTC
+    player.setVol(playerVolume);
+    ESP_LOGD(TAG, "VOL: %d", player.getVol());
 
-    DF1201S.playFileNum(0);
- 
+    // Always leave the amp off when not using it, it's a huge power draw
+    player.pause();
+    player.setLED(false);
+    player.disableAMP();
+    ESP_LOGI(TAG, "Turned off the amp");
+}
+
+void playSound()
+{
+    player.setPrompt(false);
+
+    // Turn the amp on for just a moment
+    ESP_LOGD(TAG, "Enabling the amp");
+    player.setLED(true);
+    player.enableAMP();
+
+    // Play the first file
+    ESP_LOGI(TAG, "Playing file");
+    player.setPlayMode(player.SINGLE);
+    player.playFileNum(0);
+
     vTaskDelay(pdMS_TO_TICKS(1500));
-    DF1201S.disableAMP();
-    DF1201S.setLED(false);
-    DF1201S.setPrompt(false);
+    //player.pause();
+
+    ESP_LOGD(TAG, "Disabling the amp");
+    player.disableAMP();
+    player.setLED(false);
 }
 
 void doInitialBoot()
@@ -147,6 +175,10 @@ void doInitialBoot()
 
 void publishStateToMQTT(String status)
 {
+
+    setenv("TZ", DEFAULT_TIME_ZONE, 1);
+    tzset();
+
     // Connect to the Wifi if we haven't already
     if (!network.isConnected())
     {
