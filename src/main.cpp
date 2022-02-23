@@ -39,6 +39,7 @@ extern "C"
 
 #include "mqtt/mqtt.h"
 #include "network/connection.h"
+#include "mdns/creature-mdns.h"
 #include "creatures/creatures.h"
 
 #include "DFRobot_DF1201S.h"
@@ -76,6 +77,7 @@ void doTouchEvent();
 void publishBatteryState();
 void playSound();
 void setupSound();
+void prepareForOTA();
 
 void setup()
 {
@@ -89,8 +91,7 @@ void setup()
     Serial.begin(19200);
     while (!Serial)
         ;
-
-    delay(2000);
+    vTaskDelay(pdMS_TO_TICKS(1000));
 #endif
 
     setupSound();
@@ -128,8 +129,8 @@ void setupSound()
 
     while (!player.begin(Serial1))
     {
-        ESP_LOGE(TAG, "Init failed, please check the wire connection!");
-        delay(1000);
+        ESP_LOGE(TAG, "Unable to talk to the mp3 player");
+        vTaskDelay(pdMS_TO_TICKS(1000));
     }
 
     // The player defaults to non-MUSIC, which makes all other API calls silently fail. I've
@@ -167,7 +168,6 @@ void playSound()
     player.playFileNum(0);
 
     vTaskDelay(pdMS_TO_TICKS(10000));
-    // player.pause();
 
     ESP_LOGD(TAG, "Disabling the amp");
     player.disableAMP();
@@ -179,7 +179,10 @@ void doInitialBoot()
 
     ESP_LOGI(TAG, "Helllllo! I'm up and running on on %s!", ARDUINO_VARIANT);
 
-    network.connectToWiFi();
+    if (!network.isConnected())
+    {
+        network.connectToWiFi();
+    }
 
     publishStateToMQTT("Initial Boot Completed");
 
@@ -248,35 +251,12 @@ void doTouchEvent()
         ESP_LOGI(TAG, "Touch detected on GPIO 4");
         playSound();
         break;
-    case 1:
-        ESP_LOGI(TAG, "Touch detected on GPIO 0");
-        break;
-    case 2:
-        ESP_LOGI(TAG, "Touch detected on GPIO 2");
-        break;
     case 3:
         ESP_LOGI(TAG, "Touch detected on GPIO 15");
-        break;
-    case 4:
-        ESP_LOGI(TAG, "Touch detected on GPIO 13");
-        break;
-    case 5:
-        ESP_LOGI(TAG, "Touch detected on GPIO 12");
-        break;
-    case 6:
-        ESP_LOGI(TAG, "Touch detected on GPIO 14");
-        break;
-    case 7:
-        ESP_LOGI(TAG, "Touch detected on GPIO 27");
-        break;
-    case 8:
-        ESP_LOGI(TAG, "Touch detected on GPIO 33");
-        break;
-    case 9:
-        ESP_LOGI(TAG, "Touch detected on GPIO 32");
+        prepareForOTA();
         break;
     default:
-        ESP_LOGI(TAG, "Wakeup not by touchpad");
+        ESP_LOGW(TAG, "Woken up by a touch event I don't know?!");
         break;
     }
 }
@@ -289,6 +269,7 @@ void touchCallback()
 void setUpMQTT()
 {
     // Connect to MQTT
+    ESP_LOGD(TAG, "Attempting to connect to MQTT");
     mqtt.connect(mqttAddress, 1883);
 }
 
@@ -322,4 +303,51 @@ void loop()
 {
     // This never gets called on battery powered devices
     vTaskDelete(NULL);
+}
+
+/**
+ * @brief Prepare the ESP32 to be flashed via OTA
+ *
+ * This function sets up the system to be OTA flashed like a mains-powered creature, using
+ * all of the normal stuff. :)
+ */
+void prepareForOTA()
+{
+    ESP_LOGD(TAG, "Starting to get ready for OTA!");
+
+    // Bring up the network
+    if (!network.isConnected())
+    {
+        network.connectToWiFi();
+    }
+    ESP_LOGD(TAG, "WiFi up!!");
+
+    // Register in mDNS like normal
+    CreatureMDNS creatureMDNS = CreatureMDNS(CREATURE_NAME, CREATURE_POWER);
+    creatureMDNS.registerService(666);
+    creatureMDNS.addStandardTags();
+    ESP_LOGD(TAG, "mDNS started!");
+
+    // Enable OTA
+    setup_ota(String(CREATURE_NAME));
+    start_ota();
+    ESP_LOGD(TAG, "OTA is running!");
+
+    int secondsToWait = 300;
+
+    publishStateToMQTT("Ready for OTA");
+
+    // Wait for a few minutes for the OTA to happen. If the time expires, reboot.
+    ESP_LOGI(TAG, "Ready for Over-The-Air update! I will reboot myself in %d seconds just in case.", secondsToWait);
+    for (int i = 0; i < secondsToWait; i++)
+    {
+        digitalWrite(LED_BUILTIN, HIGH);
+        vTaskDelay(pdMS_TO_TICKS(500));
+        digitalWrite(LED_BUILTIN, LOW);
+        vTaskDelay(pdMS_TO_TICKS(500));
+        ESP_LOGD(TAG, "Countdown: %d", (secondsToWait - i - 1));
+    }
+
+    ESP_LOGW(TAG, "OTA timeout expired, rebooting!");
+    ESP.restart();
 }
