@@ -3,6 +3,18 @@
 #error This code is intended to run only on the ESP32 board
 #endif
 
+/*
+    Big Note about Power Use!
+
+    The ESP32 has a really touchy brownout detector. It'll trip pretty easily, which resets the
+    board, and quickly.
+
+    On this design, trying to use the WiFi and the sound card will almost always result in the
+    brownout detector getting tripped, so I've taken care to make sure the sound card and WiFi
+    chip are never used at the same time.
+
+*/
+
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <WiFi.h>
@@ -13,8 +25,7 @@
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_attr.h"
-#include <time.h>
-#include <sys/time.h>
+
 
 extern "C"
 {
@@ -30,9 +41,6 @@ extern "C"
 #include "mqtt/mqtt.h"
 #include "network/connection.h"
 #include "creatures/creatures.h"
-#include "time/time.h"
-#include "mdns/creature-mdns.h"
-#include "mdns/magicbroker.h"
 
 #include "DFRobot_DF1201S.h"
 
@@ -45,19 +53,21 @@ static const char *TAG = "Main";
 // The higher this number the more sensitive
 #define TOUCH_WAKEUP_THRESHOLD 50
 
-// Keep track of how many times we've woken up and why
-RTC_DATA_ATTR int wakeupCount = 0;
 String wakeupReason = "";
-
-// Store the current volume in the RTC so we don't have to go to MQTT
-// for our config early
-RTC_DATA_ATTR uint8_t playerVolume = 20;
 
 MQTT mqtt = MQTT(String(CREATURE_NAME));
 Adafruit_LC709203F battery;
 NetworkConnection network = NetworkConnection();
-Time creatureTime = Time();
 DFRobot_DF1201S player;
+
+// This is a battery powered device, don't go looking for the magic broker
+// in mDNS.
+IPAddress mqttAddress(10, 9, 1, 5);
+
+
+/*
+    Function Prototypes
+*/
 
 void publishStateToMQTT(String status);
 void doInitialBoot();
@@ -69,10 +79,9 @@ void publishBatteryState();
 void playSound();
 void setupSound();
 
+
 void setup()
 {
-    // Mark that we woke up again
-    wakeupCount++;
 
     pinMode(LED_BUILTIN, OUTPUT);
     digitalWrite(LED_BUILTIN, HIGH);
@@ -105,6 +114,13 @@ void setup()
     }
 }
 
+/**
+ * @brief Configures the ESP32 to talk to the MP3 player via a hardware UART
+ *
+ * The MP3 players I use work at 115200 baud. The example docs show a software
+ * UART, but we're running on a chip that has three hardware UARTs. Let's use
+ * one of those instead to make it work better and reduce complexity.
+ */
 void setupSound()
 {
     Serial1.begin(115200, SERIAL_8N1, 16, 17);
@@ -125,8 +141,8 @@ void setupSound()
     player.setPlayMode(player.SINGLE);
     ESP_LOGD(TAG, "Play mode is currently %d (should be 3)", player.getPlayMode());
 
-    // Get the volume from the RTC
-    player.setVol(playerVolume);
+    // Get the volume from the flash (if I can figure that out)
+    player.setVol(20);
     ESP_LOGD(TAG, "VOL: %d", player.getVol());
 
     // Always leave the amp off when not using it, it's a huge power draw
@@ -138,6 +154,8 @@ void setupSound()
 
 void playSound()
 {
+    // If this is on the player will announce what mode it's in when you
+    // power it up. I don't want it to random say "MUSIC" out loud. :)
     player.setPrompt(false);
 
     // Turn the amp on for just a moment
@@ -151,7 +169,7 @@ void playSound()
     player.playFileNum(0);
 
     vTaskDelay(pdMS_TO_TICKS(10000));
-    //player.pause();
+    // player.pause();
 
     ESP_LOGD(TAG, "Disabling the amp");
     player.disableAMP();
@@ -165,9 +183,6 @@ void doInitialBoot()
 
     network.connectToWiFi();
 
-    creatureTime.init();
-    creatureTime.obtainTime();
-
     publishStateToMQTT("Initial Boot Completed");
 
     goToSleep();
@@ -175,9 +190,6 @@ void doInitialBoot()
 
 void publishStateToMQTT(String status)
 {
-
-    setenv("TZ", DEFAULT_TIME_ZONE, 1);
-    tzset();
 
     // Connect to the Wifi if we haven't already
     if (!network.isConnected())
@@ -190,10 +202,8 @@ void publishStateToMQTT(String status)
 
     // Publish our status to MQTT
     StaticJsonDocument<256> message;
-    message["wakeCount"] = wakeupCount;
     message["reason"] = wakeupReason;
     message["status"] = status;
-    message["updatedAt"] = Time::getCurrentTime();
 
     String json;
     serializeJson(message, json);
@@ -212,16 +222,12 @@ void publishStateToMQTT(String status)
 void publishBatteryState()
 {
 
-    setenv("TZ", DEFAULT_TIME_ZONE, 1);
-    tzset();
-
     if (battery.begin())
     {
         battery.setPackSize(LC709203F_APA_2000MAH);
         StaticJsonDocument<130> message;
         message["voltage"] = String(battery.cellVoltage());
         message["percent"] = String(battery.cellPercent());
-        message["updatedAt"] = Time::getCurrentTime();
 
         String json;
         serializeJson(message, json);
@@ -285,15 +291,17 @@ void touchCallback()
 void setUpMQTT()
 {
     // Connect to MQTT
-    mqtt.connect(IPAddress(10, 9, 1, 5), 1883);
+    mqtt.connect(mqttAddress, 1883);
 }
 
 void goToSleep()
 {
+    // Disable all of the sleep wakeup sources initially. We will then go turn on just the ones we need.
+    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
 
-    int sleepTime = 1800;
+    u64_t sleepTime = 3600 * 2;   // 3600s in an hour
     esp_sleep_enable_timer_wakeup(sleepTime * uS_TO_S_FACTOR);
-    ESP_LOGI(TAG, "Sleeping for %d seconds", sleepTime);
+    ESP_LOGI(TAG, "Zzzzzzzzz z z z zzzz        z             z");
 
     // Wake up on two touch points
     touchAttachInterrupt(OTA_GPIO, touchCallback, TOUCH_WAKEUP_THRESHOLD);    // Do the thing (blue wire)
@@ -302,13 +310,11 @@ void goToSleep()
     // Configure Touchpad as wakeup source
     esp_sleep_enable_touchpad_wakeup();
 
-    /*
-    Next we decide what all peripherals to shut down/keep on
-    By default, ESP32 will automatically power down the peripherals
-    not needed by the wakeup source,
-    The line below turns off all RTC peripherals in deep sleep.
-    */
-    // esp_deep_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_OFF);
+    // let's see how much we can get away with!
+    esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH,   ESP_PD_OPTION_OFF);
+    esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_SLOW_MEM, ESP_PD_OPTION_OFF);
+    esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_FAST_MEM, ESP_PD_OPTION_OFF);
+    esp_sleep_pd_config(ESP_PD_DOMAIN_XTAL,         ESP_PD_OPTION_OFF);
 
     esp_deep_sleep_start();
 }
