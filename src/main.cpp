@@ -93,7 +93,6 @@ uint8_t playerVolume;
 uint64_t sleepTime;
 String configVersion;
 
-
 /*
     Function Prototypes
 */
@@ -143,12 +142,10 @@ void setup()
     case ESP_SLEEP_WAKEUP_TOUCHPAD:
         wakeupReason = "touched";
         doTouchEvent();
-        publishStateToMQTT("Wakeup due to being touched");
         break;
     default:
         wakeupReason = "initial";
         doInitialBoot();
-        publishStateToMQTT("Initial boot complete!");
     }
 
     // Nicely hang up on the WiFi network
@@ -217,6 +214,8 @@ void playSound()
     ESP_LOGD(TAG, "Disabling the amp");
     player.disableAMP();
     player.setLED(false);
+
+    publishStateToMQTT("Played a sound");
 }
 
 void doInitialBoot()
@@ -229,6 +228,7 @@ void doInitialBoot()
         network.connectToWiFi();
     }
 
+    publishStateToMQTT("Initial boot complete!");
 }
 
 void publishStateToMQTT(String status)
@@ -293,6 +293,7 @@ void doTouchEvent()
         break;
     default:
         ESP_LOGW(TAG, "Woken up by a touch event I don't know?!");
+        publishStateToMQTT("Unknown touchPin? Ut oh.");
         break;
     }
 }
