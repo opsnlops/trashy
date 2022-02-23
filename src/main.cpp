@@ -15,11 +15,34 @@
 
 */
 
+/*
+
+    Configuring
+
+    The configuration is a JSON object that's read from MQTT:
+
+    Sample config:
+
+    {
+        "volume": 20,
+        "sleepTime": 3600,
+        "version": "Feb 22, 2022 2:22:22am"
+    }
+
+    volume: The volume of the speaker that's passed to the mp3 player. Must be 0-30.
+    sleepTime: Time in seconds to got into hibernation
+    version: Doesn't really matter what it is, but a date is handy. If the version in MQTT doesn't
+             match what's saved locally it'll overwrite what's saved on the chip with the MQTT version.
+
+    This is stored as a Preference in the ESP32.
+*/
+
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <WiFi.h>
 #include <ESPmDNS.h>
 #include <Adafruit_LC709203F.h>
+#include <Preferences.h>
 
 #include "esp_system.h"
 #include "esp_event.h"
@@ -59,10 +82,17 @@ MQTT mqtt = MQTT(String(CREATURE_NAME));
 Adafruit_LC709203F battery;
 NetworkConnection network = NetworkConnection();
 DFRobot_DF1201S player;
+Preferences preferences;
 
 // This is a battery powered device, don't go looking for the magic broker
 // in mDNS.
 IPAddress mqttAddress(10, 9, 1, 5);
+
+// Configuration
+uint8_t playerVolume;
+uint64_t sleepTime;
+String configVersion;
+
 
 /*
     Function Prototypes
@@ -94,6 +124,14 @@ void setup()
     vTaskDelay(pdMS_TO_TICKS(1000));
 #endif
 
+    // Load the preferences
+    preferences.begin(CREATURE_NAME);
+    playerVolume = preferences.getUInt("volume", 20);
+    sleepTime = preferences.getULong64("sleepTime", 3600 * 2); // Two hours
+    configVersion = preferences.getString("version", "NONE");
+    preferences.end();
+
+    // Put the amp to sleep if we had it open
     setupSound();
 
     switch (esp_sleep_get_wakeup_cause())
@@ -110,7 +148,14 @@ void setup()
     default:
         wakeupReason = "initial";
         doInitialBoot();
+        publishStateToMQTT("Initial boot complete!");
     }
+
+    // Nicely hang up on the WiFi network
+    network.disconnectFromWiFi();
+
+    // Off to bed we go!
+    goToSleep();
 }
 
 /**
@@ -141,7 +186,7 @@ void setupSound()
     ESP_LOGD(TAG, "Play mode is currently %d (should be 3)", player.getPlayMode());
 
     // Get the volume from the flash (if I can figure that out)
-    player.setVol(20);
+    player.setVol(playerVolume);
     ESP_LOGD(TAG, "VOL: %d", player.getVol());
 
     // Always leave the amp off when not using it, it's a huge power draw
@@ -184,9 +229,6 @@ void doInitialBoot()
         network.connectToWiFi();
     }
 
-    publishStateToMQTT("Initial Boot Completed");
-
-    goToSleep();
 }
 
 void publishStateToMQTT(String status)
@@ -212,12 +254,6 @@ void publishStateToMQTT(String status)
 
     // ...and the battery state
     publishBatteryState();
-
-    // Nicely hang up on the WiFi network
-    network.disconnectFromWiFi();
-
-    // Zzzzzz
-    goToSleep();
 }
 
 void publishBatteryState()
@@ -279,7 +315,6 @@ void goToSleep()
     esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
 
     // Wake up via the timer to update our battery status in Home Assistant
-    u64_t sleepTime = 3600 * 2; // 3600s in an hour
     esp_sleep_enable_timer_wakeup(sleepTime * uS_TO_S_FACTOR);
 
     // Wake up on two touch points
@@ -335,7 +370,7 @@ void prepareForOTA()
 
     int secondsToWait = 300;
 
-    publishStateToMQTT("Ready for OTA");
+    publishStateToMQTT("Waiting for OTA");
 
     // Wait for a few minutes for the OTA to happen. If the time expires, reboot.
     ESP_LOGI(TAG, "Ready for Over-The-Air update! I will reboot myself in %d seconds just in case.", secondsToWait);
