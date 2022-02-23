@@ -26,7 +26,6 @@
 #include "esp_log.h"
 #include "esp_attr.h"
 
-
 extern "C"
 {
 #include "freertos/FreeRTOS.h"
@@ -64,7 +63,6 @@ DFRobot_DF1201S player;
 // in mDNS.
 IPAddress mqttAddress(10, 9, 1, 5);
 
-
 /*
     Function Prototypes
 */
@@ -79,12 +77,12 @@ void publishBatteryState();
 void playSound();
 void setupSound();
 
-
 void setup()
 {
 
+    // Turn on the LED on the board so I can tell when it's awake or not
     pinMode(LED_BUILTIN, OUTPUT);
-    digitalWrite(LED_BUILTIN, HIGH);
+    digitalWrite(LED_BUILTIN, LOW); // on the lolin32 the LED is active low
 
 #ifdef USE_SERIAL_PORT
     // Open serial communications and wait for port to open:
@@ -299,9 +297,9 @@ void goToSleep()
     // Disable all of the sleep wakeup sources initially. We will then go turn on just the ones we need.
     esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
 
-    u64_t sleepTime = 3600 * 2;   // 3600s in an hour
+    // Wake up via the timer to update our battery status in Home Assistant
+    u64_t sleepTime = 3600 * 2; // 3600s in an hour
     esp_sleep_enable_timer_wakeup(sleepTime * uS_TO_S_FACTOR);
-    ESP_LOGI(TAG, "Zzzzzzzzz z z z zzzz        z             z");
 
     // Wake up on two touch points
     touchAttachInterrupt(OTA_GPIO, touchCallback, TOUCH_WAKEUP_THRESHOLD);    // Do the thing (blue wire)
@@ -310,12 +308,13 @@ void goToSleep()
     // Configure Touchpad as wakeup source
     esp_sleep_enable_touchpad_wakeup();
 
-    // let's see how much we can get away with!
-    esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH,   ESP_PD_OPTION_OFF);
+    // Turn off basically everything in the chip that we're not using!
+    esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_OFF);
     esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_SLOW_MEM, ESP_PD_OPTION_OFF);
     esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_FAST_MEM, ESP_PD_OPTION_OFF);
-    esp_sleep_pd_config(ESP_PD_DOMAIN_XTAL,         ESP_PD_OPTION_OFF);
+    esp_sleep_pd_config(ESP_PD_DOMAIN_XTAL, ESP_PD_OPTION_OFF);
 
+    ESP_LOGI(TAG, "Zzzzzzzzz z z z zzzz        z             z");
     esp_deep_sleep_start();
 }
 
