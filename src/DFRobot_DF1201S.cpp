@@ -13,6 +13,8 @@
 
 #include "esp_log.h"
 
+static const char *TAG = "Player";
+
 DFRobot_DF1201S::DFRobot_DF1201S()
 {
 }
