@@ -60,6 +60,7 @@ extern "C"
 
 #include "ota.h"
 
+#include "logging/logging.h"
 #include "mqtt/mqtt.h"
 #include "network/connection.h"
 #include "mdns/creature-mdns.h"
@@ -83,6 +84,7 @@ Adafruit_LC709203F battery;
 NetworkConnection network = NetworkConnection();
 DFRobot_DF1201S player;
 Preferences preferences;
+Logger l = Logger();
 
 // This is a battery powered device, don't go looking for the magic broker
 // in mDNS.
@@ -111,17 +113,14 @@ void prepareForOTA();
 void setup()
 {
 
+    // Before we do anything, get the logger going
+    l.init();
+    Serial.println("Logging via the creature logger");
+    l.debug("Logging running!");
+
     // Turn on the LED on the board so I can tell when it's awake or not
     pinMode(LED_BUILTIN, OUTPUT);
-    digitalWrite(LED_BUILTIN, LOW); // on the lolin32 the LED is active low
-
-#ifdef USE_SERIAL_PORT
-    // Open serial communications and wait for port to open:
-    Serial.begin(19200);
-    while (!Serial)
-        ;
-    vTaskDelay(pdMS_TO_TICKS(1000));
-#endif
+    digitalWrite(LED_BUILTIN, LOW);
 
     // Load the preferences
     preferences.begin(CREATURE_NAME);
@@ -167,11 +166,11 @@ void setupSound()
     Serial1.begin(115200, SERIAL_8N1, 16, 17);
     while (!Serial1)
         ;
-    ESP_LOGI(TAG, "Serial1 opened for the MP3 player");
+    l.info("Serial1 opened for the MP3 player");
 
     while (!player.begin(Serial1))
     {
-        ESP_LOGE(TAG, "Unable to talk to the mp3 player");
+        l.error("Unable to talk to the mp3 player");
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 
@@ -180,17 +179,17 @@ void setupSound()
     player.switchFunction(player.MUSIC);
     player.setPrompt(false);
     player.setPlayMode(player.SINGLE);
-    ESP_LOGD(TAG, "Play mode is currently %d (should be 3)", player.getPlayMode());
+    l.debug("Play mode is currently %d (should be 3)", player.getPlayMode());
 
     // Get the volume from the flash (if I can figure that out)
     player.setVol(playerVolume);
-    ESP_LOGD(TAG, "VOL: %d", player.getVol());
+    l.debug("VOL: %d", player.getVol());
 
     // Always leave the amp off when not using it, it's a huge power draw
     player.pause();
     player.setLED(false);
     player.disableAMP();
-    ESP_LOGI(TAG, "Turned off the amp");
+    l.info("Turned off the amp");
 }
 
 void playSound()
@@ -200,18 +199,18 @@ void playSound()
     player.setPrompt(false);
 
     // Turn the amp on for just a moment
-    ESP_LOGD(TAG, "Enabling the amp");
+    l.debug("Enabling the amp");
     player.setLED(true);
     player.enableAMP();
 
     // Play the first file
-    ESP_LOGI(TAG, "Playing file");
+    l.info("Playing file");
     player.setPlayMode(player.SINGLE);
     player.playFileNum(0);
 
     vTaskDelay(pdMS_TO_TICKS(10000));
 
-    ESP_LOGD(TAG, "Disabling the amp");
+    l.debug("Disabling the amp");
     player.disableAMP();
     player.setLED(false);
 
@@ -221,7 +220,7 @@ void playSound()
 void doInitialBoot()
 {
 
-    ESP_LOGI(TAG, "Helllllo! I'm up and running on on %s!", ARDUINO_VARIANT);
+    l.info("Helllllo! I'm up and running on on %s!", ARDUINO_VARIANT);
 
     if (!network.isConnected())
     {
@@ -273,7 +272,7 @@ void publishBatteryState()
     }
     else
     {
-        ESP_LOGE(TAG, "Unable to find the battery monitor!");
+        l.error("Unable to find the battery monitor!");
     }
 }
 
@@ -284,15 +283,15 @@ void doTouchEvent()
     switch (touchPin)
     {
     case 0:
-        ESP_LOGI(TAG, "Touch detected on GPIO 4");
+        l.info("Touch detected on GPIO 4");
         playSound();
         break;
     case 3:
-        ESP_LOGI(TAG, "Touch detected on GPIO 15");
+        l.info("Touch detected on GPIO 15");
         prepareForOTA();
         break;
     default:
-        ESP_LOGW(TAG, "Woken up by a touch event I don't know?!");
+        l.warning("Woken up by a touch event I don't know?!");
         publishStateToMQTT("Unknown touchPin? Ut oh.");
         break;
     }
@@ -306,7 +305,7 @@ void touchCallback()
 void setUpMQTT()
 {
     // Connect to MQTT
-    ESP_LOGD(TAG, "Attempting to connect to MQTT");
+    l.debug("Attempting to connect to MQTT");
     mqtt.connect(mqttAddress, 1883);
 }
 
@@ -331,7 +330,7 @@ void goToSleep()
     esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_FAST_MEM, ESP_PD_OPTION_OFF);
     esp_sleep_pd_config(ESP_PD_DOMAIN_XTAL, ESP_PD_OPTION_OFF);
 
-    ESP_LOGI(TAG, "Zzzzzzzzz z z z zzzz        z             z");
+    l.info("Zzzzzzzzz z z z zzzz        z             z");
     esp_deep_sleep_start();
 }
 
@@ -349,41 +348,41 @@ void loop()
  */
 void prepareForOTA()
 {
-    ESP_LOGD(TAG, "Starting to get ready for OTA!");
+    l.debug("Starting to get ready for OTA!");
 
     // Bring up the network
     if (!network.isConnected())
     {
         network.connectToWiFi();
     }
-    ESP_LOGD(TAG, "WiFi up!!");
+    l.debug("WiFi up!!");
 
     // Register in mDNS like normal
     CreatureMDNS creatureMDNS = CreatureMDNS(CREATURE_NAME, CREATURE_POWER);
     creatureMDNS.registerService(666);
     creatureMDNS.addStandardTags();
-    ESP_LOGD(TAG, "mDNS started!");
+    l.debug("mDNS started!");
 
     // Enable OTA
     setup_ota(String(CREATURE_NAME));
     start_ota();
-    ESP_LOGD(TAG, "OTA is running!");
+    l.debug("OTA is running!");
 
     int secondsToWait = 300;
 
     publishStateToMQTT("Waiting for OTA");
 
     // Wait for a few minutes for the OTA to happen. If the time expires, reboot.
-    ESP_LOGI(TAG, "Ready for Over-The-Air update! I will reboot myself in %d seconds just in case.", secondsToWait);
+    l.info("Ready for Over-The-Air update! I will reboot myself in %d seconds just in case.", secondsToWait);
     for (int i = 0; i < secondsToWait; i++)
     {
         digitalWrite(LED_BUILTIN, HIGH);
         vTaskDelay(pdMS_TO_TICKS(500));
         digitalWrite(LED_BUILTIN, LOW);
         vTaskDelay(pdMS_TO_TICKS(500));
-        ESP_LOGD(TAG, "Countdown: %d", (secondsToWait - i - 1));
+        l.debug("Countdown: %d", (secondsToWait - i - 1));
     }
 
-    ESP_LOGW(TAG, "OTA timeout expired, rebooting!");
+    l.warning("OTA timeout expired, rebooting!");
     ESP.restart();
 }

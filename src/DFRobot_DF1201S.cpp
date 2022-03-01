@@ -12,8 +12,11 @@
 #include <DFRobot_DF1201S.h>
 
 #include "esp_log.h"
+#include "logging/logging.h"
 
 static const char *TAG = "Player";
+
+static creatures::Logger l;
 
 DFRobot_DF1201S::DFRobot_DF1201S()
 {
@@ -114,22 +117,22 @@ bool DFRobot_DF1201S::setPlayMode(ePlayMode_t mode)
 {
    if (curFunction != MUSIC)
    {
-      ESP_LOGE(TAG, "Unable to set play mode, current function is not MUSIC");
+      l.error("Unable to set play mode, current function is not MUSIC");
       return false;
    }
-   ESP_LOGD(TAG, "Attempting to set play mode to %d", mode);
+   l.debug("Attempting to set play mode to %d", mode);
 
    sPacket_t cmd;
    cmd = pack("PLAYMODE", String(mode));
    writeATCommand(cmd.str, cmd.length);
    if (readAck() == "OK\r\n")
    {
-      ESP_LOGD(TAG, "Player responded OK to mode change");
+      l.debug("Player responded OK to mode change");
       return true;
    }
    else
    {
-      ESP_LOGE(TAG, "Player did NOT respond OK to mode change");
+      l.error("Player did NOT respond OK to mode change");
       return false;
    }
 }
