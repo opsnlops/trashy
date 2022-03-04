@@ -112,11 +112,11 @@ void prepareForOTA();
 
 void setup()
 {
-
     // Before we do anything, get the logger going
     l.init();
-    Serial.println("Logging via the creature logger");
     l.debug("Logging running!");
+
+    network.connectToWiFi();
 
     // Turn on the LED on the board so I can tell when it's awake or not
     pinMode(LED_BUILTIN, OUTPUT);
