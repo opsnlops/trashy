@@ -109,12 +109,20 @@ void publishBatteryState();
 void playSound();
 void setupSound();
 void prepareForOTA();
+void enableLDO2(boolean enabled);
 
 void setup()
 {
     // Before we do anything, get the logger going
     l.init();
     l.debug("Logging running!");
+
+    // GPO 21 enables the second output
+    pinMode(21, OUTPUT);
+    enableLDO2(true);
+
+    pinMode(ACTION_GPIO, INPUT);
+    pinMode(OTA_GPIO, INPUT);
 
     network.connectToWiFi();
 
@@ -125,7 +133,7 @@ void setup()
     // Load the preferences
     preferences.begin(CREATURE_NAME);
     playerVolume = preferences.getUInt("volume", 20);
-    sleepTime = preferences.getULong64("sleepTime", 3600 * 2); // Two hours
+    sleepTime = preferences.getULong64("sleepTime", 3600 * 1); // One hour
     configVersion = preferences.getString("version", "NONE");
     preferences.end();
 
@@ -147,8 +155,8 @@ void setup()
         doInitialBoot();
     }
 
-    // Nicely hang up on the WiFi network
-    network.disconnectFromWiFi();
+    // Make sure sure the power is off
+    enableLDO2(false);
 
     // Off to bed we go!
     goToSleep();
@@ -163,7 +171,7 @@ void setup()
  */
 void setupSound()
 {
-    Serial1.begin(115200, SERIAL_8N1, 16, 17);
+    Serial1.begin(115200, SERIAL_8N1, 43, 44);
     while (!Serial1)
         ;
     l.info("Serial1 opened for the MP3 player");
@@ -227,6 +235,7 @@ void doInitialBoot()
         network.connectToWiFi();
     }
 
+    publishBatteryState();
     publishStateToMQTT("Initial boot complete!");
 }
 
@@ -261,9 +270,14 @@ void publishBatteryState()
     if (battery.begin())
     {
         battery.setPackSize(LC709203F_APA_2000MAH);
+        float cellVoltage = battery.cellVoltage();
+        float cellPercent = battery.cellPercent();
+
+        l.info("battery: voltage: %.2f, percent: %.2f", cellVoltage, cellPercent);
+
         StaticJsonDocument<130> message;
-        message["voltage"] = String(battery.cellVoltage());
-        message["percent"] = String(battery.cellPercent());
+        message["voltage"] = String(cellVoltage);
+        message["percent"] = String(cellPercent);
 
         String json;
         serializeJson(message, json);
@@ -311,6 +325,8 @@ void setUpMQTT()
 
 void goToSleep()
 {
+    l.debug("in goToSleep()");
+
     // Disable all of the sleep wakeup sources initially. We will then go turn on just the ones we need.
     esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
 
@@ -331,6 +347,14 @@ void goToSleep()
     esp_sleep_pd_config(ESP_PD_DOMAIN_XTAL, ESP_PD_OPTION_OFF);
 
     l.info("Zzzzzzzzz z z z zzzz        z             z");
+    vTaskDelay(pdMS_TO_TICKS(1000));
+
+    if (network.isConnected())
+    {
+        network.disconnectFromWiFi();
+    }
+
+    // Goodnight!
     esp_deep_sleep_start();
 }
 
@@ -385,4 +409,18 @@ void prepareForOTA()
 
     l.warning("OTA timeout expired, rebooting!");
     ESP.restart();
+}
+
+void enableLDO2(boolean enabled)
+{
+    if (enabled)
+    {
+        l.debug("turning on the second v3.3 output");
+        digitalWrite(21, HIGH);
+    }
+    else
+    {
+        l.debug("turning off the second v3.3 output");
+        digitalWrite(21, LOW);
+    }
 }
