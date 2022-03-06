@@ -54,6 +54,7 @@ extern "C"
 #include "freertos/FreeRTOS.h"
 #include "freertos/timers.h"
 #include "freertos/queue.h"
+#include "driver/touch_pad.h"
 }
 
 #include "creature.h"
@@ -72,10 +73,8 @@ extern "C"
 
 using namespace creatures;
 
-static const char *TAG = "Main";
-
-// The higher this number the more sensitive
-#define TOUCH_WAKEUP_THRESHOLD 50
+// The lower this number the more sensitive
+#define TOUCH_WAKEUP_THRESHOLD 0.1
 
 String wakeupReason = "";
 
@@ -120,9 +119,6 @@ void setup()
     // GPO 21 enables the second output
     pinMode(21, OUTPUT);
     enableLDO2(true);
-
-    pinMode(ACTION_GPIO, INPUT);
-    pinMode(OTA_GPIO, INPUT);
 
     network.connectToWiFi();
 
@@ -296,16 +292,12 @@ void doTouchEvent()
 
     switch (touchPin)
     {
-    case 0:
-        l.info("Touch detected on GPIO 4");
+    case TOUCH_PAD_NUM1:
+        l.info("Touch detected on TOUCH_PAD_NUM1");
         playSound();
         break;
-    case 3:
-        l.info("Touch detected on GPIO 15");
-        prepareForOTA();
-        break;
     default:
-        l.warning("Woken up by a touch event I don't know?!");
+        l.warning("Woken up by a touch pin I don't know?! (%d)", touchPin);
         publishStateToMQTT("Unknown touchPin? Ut oh.");
         break;
     }
@@ -327,24 +319,77 @@ void goToSleep()
 {
     l.debug("in goToSleep()");
 
+    /*
+        This is largely based on the docs:
+
+        https://github.com/espressif/esp-idf/blob/master/examples/system/deep_sleep/main/deep_sleep_example_main.c
+
+        The ESP32-S2 only supports one wakeup channel, unless the ESP32.
+     */
+
     // Disable all of the sleep wakeup sources initially. We will then go turn on just the ones we need.
     esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
 
     // Wake up via the timer to update our battery status in Home Assistant
     esp_sleep_enable_timer_wakeup(sleepTime * uS_TO_S_FACTOR);
 
-    // Wake up on two touch points
-    touchAttachInterrupt(OTA_GPIO, touchCallback, TOUCH_WAKEUP_THRESHOLD);    // Do the thing (blue wire)
-    touchAttachInterrupt(ACTION_GPIO, touchCallback, TOUCH_WAKEUP_THRESHOLD); // Do OTA (yellow wire)
+    /* Initialize touch pad peripheral. */
+    touch_pad_init();
+
+    // The ESP32-S2 only supports one sleep channel
+    touch_pad_config(TOUCH_PAD_NUM1);
+
+    // Set up a denoise filter (taken from the docs)
+    touch_pad_denoise_t denoise = {
+        .grade = TOUCH_PAD_DENOISE_BIT4,
+        .cap_level = TOUCH_PAD_DENOISE_CAP_L4,
+    };
+    touch_pad_denoise_set_config(&denoise);
+    touch_pad_denoise_enable();
+    l.debug("Denoise function init");
+
+    // Filter settings (also taken from the docs)
+    touch_filter_config_t filter_info = {
+        .mode = TOUCH_PAD_FILTER_IIR_16,
+        .debounce_cnt = 1, // 1 time count.
+        .noise_thr = 0,    // 50%
+        .jitter_step = 4,  // use for jitter mode.
+        .smh_lvl = TOUCH_PAD_SMOOTH_IIR_2,
+    };
+    touch_pad_filter_set_config(&filter_info);
+    touch_pad_filter_enable();
+    l.debug("touch pad filter init %d", TOUCH_PAD_FILTER_IIR_8);
+
+    /* Set sleep touch pad. */
+    touch_pad_sleep_channel_enable(TOUCH_PAD_NUM1, true);
+    touch_pad_sleep_channel_enable_proximity(TOUCH_PAD_NUM1, false);
+
+    /* Reducing the operating frequency can effectively reduce power consumption. */
+    touch_pad_sleep_channel_set_work_time(1000, TOUCH_PAD_MEASURE_CYCLE_DEFAULT);
+
+    /* Enable touch sensor clock. Work mode is "timer trigger". */
+    touch_pad_set_fsm_mode(TOUCH_FSM_MODE_TIMER);
+    touch_pad_fsm_start();
+    vTaskDelay(pdMS_TO_TICKS(100));
+
+    // Calculate the threshold for when we should wake up
+    uint32_t touchValue, wakeThreshold;
+    touch_pad_sleep_channel_read_smooth(TOUCH_PAD_NUM1, &touchValue);
+    wakeThreshold = touchValue * TOUCH_WAKEUP_THRESHOLD; // Set the threshold to trigger a wakeup
+
+    touch_pad_sleep_set_threshold(TOUCH_PAD_NUM1, wakeThreshold);
+    l.debug("Touch pad #%d average: %d, wakeup threshold set to %d",
+            TOUCH_PAD_NUM1,
+            touchValue,
+            wakeThreshold);
 
     // Configure Touchpad as wakeup source
-    esp_sleep_enable_touchpad_wakeup();
-
-    // Turn off basically everything in the chip that we're not using!
-    esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_OFF);
-    esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_SLOW_MEM, ESP_PD_OPTION_OFF);
-    esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_FAST_MEM, ESP_PD_OPTION_OFF);
-    esp_sleep_pd_config(ESP_PD_DOMAIN_XTAL, ESP_PD_OPTION_OFF);
+    esp_err_t WAKE_ON_TOUCHPAD = esp_sleep_enable_touchpad_wakeup();
+    if (WAKE_ON_TOUCHPAD != ESP_OK)
+    {
+        l.warning("esp_sleep_enable_touchpad_wakeup() didn't turn ESP_OK: %d", WAKE_ON_TOUCHPAD);
+    }
+    esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
 
     l.info("Zzzzzzzzz z z z zzzz        z             z");
     vTaskDelay(pdMS_TO_TICKS(1000));
