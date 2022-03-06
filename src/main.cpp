@@ -59,8 +59,6 @@ extern "C"
 
 #include "creature.h"
 
-#include "ota.h"
-
 #include "logging/logging.h"
 #include "mqtt/mqtt.h"
 #include "network/connection.h"
@@ -107,7 +105,6 @@ void doTouchEvent();
 void publishBatteryState();
 void playSound();
 void setupSound();
-void prepareForOTA();
 void enableLDO2(boolean enabled);
 
 void setup()
@@ -119,8 +116,6 @@ void setup()
     // GPO 21 enables the second output
     pinMode(21, OUTPUT);
     enableLDO2(true);
-
-    network.connectToWiFi();
 
     // Turn on the LED on the board so I can tell when it's awake or not
     pinMode(LED_BUILTIN, OUTPUT);
@@ -175,7 +170,7 @@ void setupSound()
     while (!player.begin(Serial1))
     {
         l.error("Unable to talk to the mp3 player");
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        vTaskDelay(pdMS_TO_TICKS(150));
     }
 
     // The player defaults to non-MUSIC, which makes all other API calls silently fail. I've
@@ -231,7 +226,6 @@ void doInitialBoot()
         network.connectToWiFi();
     }
 
-    publishBatteryState();
     publishStateToMQTT("Initial boot complete!");
 }
 
@@ -407,53 +401,6 @@ void loop()
 {
     // This never gets called on battery powered devices
     vTaskDelete(NULL);
-}
-
-/**
- * @brief Prepare the ESP32 to be flashed via OTA
- *
- * This function sets up the system to be OTA flashed like a mains-powered creature, using
- * all of the normal stuff. :)
- */
-void prepareForOTA()
-{
-    l.debug("Starting to get ready for OTA!");
-
-    // Bring up the network
-    if (!network.isConnected())
-    {
-        network.connectToWiFi();
-    }
-    l.debug("WiFi up!!");
-
-    // Register in mDNS like normal
-    CreatureMDNS creatureMDNS = CreatureMDNS(CREATURE_NAME, CREATURE_POWER);
-    creatureMDNS.registerService(666);
-    creatureMDNS.addStandardTags();
-    l.debug("mDNS started!");
-
-    // Enable OTA
-    setup_ota(String(CREATURE_NAME));
-    start_ota();
-    l.debug("OTA is running!");
-
-    int secondsToWait = 300;
-
-    publishStateToMQTT("Waiting for OTA");
-
-    // Wait for a few minutes for the OTA to happen. If the time expires, reboot.
-    l.info("Ready for Over-The-Air update! I will reboot myself in %d seconds just in case.", secondsToWait);
-    for (int i = 0; i < secondsToWait; i++)
-    {
-        digitalWrite(LED_BUILTIN, HIGH);
-        vTaskDelay(pdMS_TO_TICKS(500));
-        digitalWrite(LED_BUILTIN, LOW);
-        vTaskDelay(pdMS_TO_TICKS(500));
-        l.debug("Countdown: %d", (secondsToWait - i - 1));
-    }
-
-    l.warning("OTA timeout expired, rebooting!");
-    ESP.restart();
 }
 
 void enableLDO2(boolean enabled)
